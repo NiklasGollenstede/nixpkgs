@@ -150,6 +150,15 @@ in
       '';
     };
 
+    networking.nat.netns = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "nated";
+      description = ''
+        Name of an `ip netns` in which to perform the NAT setup (instead of in the default).
+      '';
+    };
+
   };
 
 

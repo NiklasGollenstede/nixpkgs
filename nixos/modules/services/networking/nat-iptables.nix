@@ -19,11 +19,15 @@ let
   # Whether given IP (plus optional port) is an IPv6.
   isIPv6 = ip: builtins.length (lib.splitString ":" ip) > 2;
 
-  helpers = import ./helpers.nix { inherit config lib; };
+  helpers = (import ./helpers.nix { inherit config lib; }) + ''
+    ${lib.concatMapStringsSep "\n" (iptables: ''
+      ${iptables}() { ${pkgs.iproute2}/bin/ip netns exec ${lib.escapeShellArg cfg.netns} ${iptables} "$@" ; }
+    '') (lib.optionals (cfg.netns != null) [ "iptables" "ip6tables" ])}
+  '';
 
   flushNat = ''
     ${helpers}
-    ip46tables -w -t nat -D PREROUTING -j nixos-nat-pre 2>/dev/null|| true
+    ip46tables -w -t nat -D PREROUTING -j nixos-nat-pre 2>/dev/null || true
     ip46tables -w -t nat -F nixos-nat-pre 2>/dev/null || true
     ip46tables -w -t nat -X nixos-nat-pre 2>/dev/null || true
     ip46tables -w -t nat -D POSTROUTING -j nixos-nat-post 2>/dev/null || true
@@ -160,32 +164,22 @@ in
 
   config = mkIf (!config.networking.nftables.enable)
     (mkMerge [
-      ({ networking.firewall.extraCommands = mkBefore flushNat; })
-      (mkIf config.networking.nat.enable {
+      ({ networking.firewall.extraCommands = "${pkgs.writeShellScript "nat-flush" flushNat}"; })
+      (lib.mkIf cfg.enable { systemd.services.nat = rec {
+        description = "Network Address Translation";
+        wantedBy = [ "network.target" ];
+        bindsTo = lib.optional config.networking.firewall.enable "firewall.service";
+        after = [ "network-pre.target" "systemd-modules-load.service" ] ++ bindsTo;
+        path = [ config.networking.firewall.package ];
+        unitConfig.ConditionCapability = "CAP_NET_ADMIN";
 
-        networking.firewall = mkIf config.networking.firewall.enable {
-          extraCommands = setupNat;
-          extraStopCommands = flushNat;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
         };
 
-        systemd.services = mkIf (!config.networking.firewall.enable) {
-          nat = {
-            description = "Network Address Translation";
-            wantedBy = [ "network.target" ];
-            after = [ "network-pre.target" "systemd-modules-load.service" ];
-            path = [ config.networking.firewall.package ];
-            unitConfig.ConditionCapability = "CAP_NET_ADMIN";
-
-            serviceConfig = {
-              Type = "oneshot";
-              RemainAfterExit = true;
-            };
-
-            script = flushNat + setupNat;
-
-            postStop = flushNat;
-          };
-        };
-      })
+        script = flushNat + setupNat;
+        postStop = flushNat;
+      }; })
     ]);
 }
